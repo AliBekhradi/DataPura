@@ -33,6 +33,14 @@ def missingrows_df():
         "score": [90, None, None, None, None]
     })
 
+@pytest.fixture
+def distributionrates_df():
+    return pd.DataFrame({
+        "age": [25, 0, None, 40, None],
+        "income": [0, 50000, 60000, None, 0],
+        "score": [None, None, 80, 0, 100],
+    })
+
 """Basics"""
 @pytest.fixture
 def rows_sampling_df():
@@ -89,6 +97,14 @@ def standardize_date_df():
     })
 
 @pytest.fixture
+def batchstringremover_df():
+    return pd.DataFrame({
+        "cylinders": ["8 cylinders", "6 cylinders", "4 cylinders"],
+        "top_speed": ["180 mph", "200 mph", "150 mph"],
+        "zero_to_sixty": ["4.2s", "3.9s", "5.1s"]
+    })
+
+@pytest.fixture
 def format_numbers_df():
     return pd.DataFrame({
         'price': ['$1,200.50', '€3,450.99', '£-720.3', 'invalid', None],
@@ -114,9 +130,9 @@ def rows_duplicate_remover_df():
 @pytest.fixture
 def imputation_df():
     return pd.DataFrame({
-        "age": [25, 30, None, 40, None],
-        "income": [50000, None, 60000, None, 70000],
-        "score": [None, None, 80, 85, 90]
+        "age": [25, 0, None, 40, None],
+        "income": [50000, 0, 60000, None, 70000],
+        "score": [None, 0, 80, 85, 90]
     })
 
 @pytest.fixture

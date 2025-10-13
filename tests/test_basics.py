@@ -41,7 +41,7 @@ class TestColumnsRename:
             column_rename_df,
             columns="first_name",
             rename_to="name",
-            strict=True
+            error_skip=False
         )
 
         assert "name" in result.columns
@@ -52,7 +52,7 @@ class TestColumnsRename:
             column_rename_df,
             columns=["first_name", "last_name"],
             rename_to=["fname", "lname"],
-            strict=True
+            error_skip = False
         )
 
         assert "fname" in result.columns
@@ -66,7 +66,7 @@ class TestColumnsRename:
                 column_rename_df,
                 columns="nonexistent",
                 rename_to="whatever",
-                strict=True
+                error_skip=False
             )
 
     def test_columns_rename_nonexistent_nonstrict(self, prep, column_rename_df):
@@ -74,7 +74,7 @@ class TestColumnsRename:
             column_rename_df,
             columns=["first_name", "nonexistent"],
             rename_to=["fname", "missing"],
-            strict=False
+            error_skip=True
         )
 
         assert "fname" in result.columns

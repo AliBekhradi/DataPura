@@ -11,6 +11,7 @@ import joblib
 import openpyxl
 from dateutil.parser import parse
 from rapidfuzz import process, fuzz
+import numpy as np
 
 class MappingManager:
     
@@ -93,15 +94,22 @@ class Preprocessor:
                 else:
                     raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
 
+        value_removed_df = df.copy()
+        
         # Replace the given value with NaN only in the specified columns
-        df[columns] = df[columns].progress_apply(lambda x: x.replace(value, pd.NA))
+        value_removed_df[columns] = value_removed_df[columns].progress_apply(lambda x: x.replace(value, pd.NA))
 
         # Drop only NaN values in the specified columns, but keep the other data
-        df = df.dropna(subset=columns)
+        value_removed_df = value_removed_df.dropna(subset=columns)
 
-        return df
+        return value_removed_df
 
-    def imputator(self, df: pd.DataFrame, columns: Union[list, str], mode: Union[list, str], error_skip: bool = False) -> pd.DataFrame:
+    def imputator(self, 
+              df: pd.DataFrame, 
+              columns: Union[list, str], 
+              mode: Union[list, str], 
+              error_skip: bool = False,
+              impute_zeros: bool = False) -> pd.DataFrame:
         
         if isinstance(columns, str):
             columns = [columns]
@@ -118,24 +126,100 @@ class Preprocessor:
                 else:
                     raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
         
+        imputed_df = df.copy()
+        
         for col, m in zip(columns, mode):
             if col not in df.columns:
                 raise KeyError(f"Column '{col}' not found in DataFrame.")
+            
+            # Replace zeros with NaN if the switch is on
+            if impute_zeros:
+                imputed_df[col] = imputed_df[col].replace(0, np.nan)
 
             if m == "mean":
-                df[col] = df[col].fillna(df[col].mean())
+                imputed_df[col] = imputed_df[col].fillna(imputed_df[col].mean())
             elif m == "median":
-                df[col] = df[col].fillna(df[col].median())
+                imputed_df[col] = imputed_df[col].fillna(imputed_df[col].median())
             elif m == "mode":
-                df[col] = df[col].fillna(df[col].mode()[0])
+                imputed_df[col] = imputed_df[col].fillna(imputed_df[col].mode()[0])
             elif m == "interpolate":
-                df[col] = df[col].interpolate()
+                imputed_df[col] = imputed_df[col].interpolate()
             else:
                 raise ValueError(f"Invalid mode '{m}' for column '{col}'. Choose from: mean, median, mode, interpolate.")
         
-        return df
+        return imputed_df
     
-    def columns_rename(self, df: pd.DataFrame, columns: Union[list, str], rename_to: Union[list, str], strict: bool = True) -> pd.DataFrame:
+    def distribution_rates(self, 
+            df: pd.DataFrame, 
+            columns: Union[list, str],
+            error_skip: bool = False) -> pd.DataFrame:
+        
+        if isinstance(columns, str):
+            columns = [columns]
+        
+        for col in columns:
+            if col not in df.columns:
+                if error_skip:
+                    print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
+                    continue
+                else:
+                    raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
+    
+        result = {}
+
+        for col in columns:
+            total = len(df)
+            null_count = df[col].isna().sum()
+            zero_count = (df[col] == 0).sum()
+            safe_count = total - null_count - zero_count
+
+            result[col] = {
+                "Safe (count)": safe_count,
+                "Safe (%)": round(safe_count / total * 100, 2),
+                "Zero (count)": zero_count,
+                "Zero (%)": round(zero_count / total * 100, 2),
+                "Null (count)": null_count,
+                "Null (%)": round(null_count / total * 100, 2),
+            }
+
+        return pd.DataFrame(result).T
+    
+    def batch_string_remover(self, df: pd.DataFrame, columns: Union[list,str], remove: Union[list,str], error_skip: bool = False) -> pd.DataFrame:
+        """
+        Removes specific substrings from specified columns in batches.
+        
+        Example:
+            columns = ["number of cylinders", "top speed", "0-60"]
+            remove = ["cylinders", "mph", "s"]
+        
+        The function will remove "cylinders" from the first column,
+        "mph" from the second, and "s" from the third.
+        """
+        
+        if isinstance(columns, str):
+            columns = [columns]
+        if isinstance(remove, str):
+            remove = [remove]
+        
+        if len(columns) != len(remove):
+            raise ValueError("The 'columns' and 'remove' lists must have the same length.")
+
+        for col in columns:
+            if col not in df.columns:
+                if error_skip:
+                    print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
+                    continue
+                else:
+                    raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
+        
+        string_removed_df = df.copy()        
+        
+        for col, to_remove in zip(columns, remove):
+            string_removed_df[col] = string_removed_df[col].str.replace(to_remove, "", regex=True, flags=re.IGNORECASE).str.strip()
+
+        return string_removed_df
+
+    def columns_rename(self, df: pd.DataFrame, columns: Union[list, str], rename_to: Union[list, str], error_skip: bool = True) -> pd.DataFrame:
         
         if isinstance(columns, str):
             columns = [columns]
@@ -147,20 +231,21 @@ class Preprocessor:
 
         missing = [col for col in columns if col not in df.columns]
 
-        if missing and strict:
+        if missing and not error_skip:
             raise KeyError(f"Column(s) {missing} not found in DataFrame.")
 
         # If not strict, filter out missing ones before zip
-        if not strict:
+        if error_skip:
             columns, rename_to = zip(*[
                 (col, new) for col, new in zip(columns, rename_to)
                 if col in df.columns
             ])
-
+        renamed_df = df.copy()
+        
         rename_map = dict(zip(columns, rename_to))
-        df = df.rename(columns=rename_map)
+        renamed_df = renamed_df.rename(columns=rename_map)
 
-        return df
+        return renamed_df
     
     def columns_drop(self, df: pd.DataFrame, columns: Union[list, str], error_skip: bool = False) -> pd.DataFrame:
         
@@ -175,9 +260,11 @@ class Preprocessor:
                 else:
                     raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
         
+        drop_df = df.copy()
         # Drop specified columns
-        df = df.drop(columns=columns, axis=1)
-        return df
+        drop_df = drop_df.drop(columns=columns, axis=1)
+        
+        return drop_df
     
     def value_remover(self, df: pd.DataFrame, value: Union[int, list], columns: Union[str, list], mode: Union[str, list], error_skip: bool = False) -> pd.DataFrame:
         
@@ -199,23 +286,25 @@ class Preprocessor:
                 else:
                     raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
         
+        value_removed_df = df.copy()
+        
         for col, val, mod in zip(columns, value, mode):
             
             if isinstance(val, tuple) and len(val) == 2:
                 mod == "range"
-                df = df[(df[col] >= val[0]) & (df[col] <= val[1])]
+                value_removed_df = value_removed_df[(value_removed_df[col] >= val[0]) & (value_removed_df[col] <= val[1])]
             elif isinstance(val, int):
                 if mod == "below":
-                    df = df[df[col] <= val]
+                    value_removed_df = value_removed_df[value_removed_df[col] <= val]
                 elif mod == "above":
-                    df = df[df[col] >= val]
+                    value_removed_df = value_removed_df[value_removed_df[col] >= val]
                 else:
                     raise ValueError("""Please type "above", "below" or "range" for the mode to start removing""")
 
             else:
                 raise ValueError(f"Invalid value type for column '{col}'. Must be an int or tuple.")
             
-        return df
+        return value_removed_df
     
     def dup_row_remover(self, df: pd.DataFrame, columns:Union[str,list] = None, keep: str = "first", error_skip: bool = False) -> pd.DataFrame:
         
@@ -242,9 +331,10 @@ class Preprocessor:
         if keep not in ["first", "last", False]:
             raise ValueError("'keep' should be either 'first', 'last', or False. Try again.")
 
-        df = df.drop_duplicates(subset=columns, keep= keep).reset_index(drop = True)
-        return df
-
+        dup_row_df = df.copy()
+        
+        dup_row_df = dup_row_df.drop_duplicates(subset=columns, keep= keep).reset_index(drop = True)
+        return dup_row_df
 
     def missing_rows(self, df: pd.DataFrame, drop_threshold: float = None, axis: str = None, inplace: bool = False) -> pd.DataFrame:
         """
@@ -329,27 +419,29 @@ class Preprocessor:
         if isinstance(columns, str):
             columns = [columns]
         
+        case_convert_df = df.copy()
+        
         for col in columns:
-            if col not in df.columns:
+            if col not in case_convert_df.columns:
                 if error_skip:
                     print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
                     continue
                 else:
                     raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
-                
-            if not pd.api.types.is_string_dtype(df[col]):
-                df[col] = df[col].astype(str)
+            
+            if not pd.api.types.is_string_dtype(case_convert_df[col]):
+                case_convert_df[col] = case_convert_df[col].astype(str)
 
             if mode == 'lower':
-                df[col] = df[col].str.lower()
+                case_convert_df[col] = case_convert_df[col].str.lower()
             elif mode == 'upper':
-                df[col] = df[col].str.upper()
+                case_convert_df[col] = case_convert_df[col].str.upper()
             elif mode == 'title':
-                df[col] = df[col].str.title()
+                case_convert_df[col] = case_convert_df[col].str.title()
             elif mode == 'capitalize':
-                df[col] = df[col].apply(lambda x: ' '.join([word.capitalize() for word in x.split()]))
+                case_convert_df[col] = case_convert_df[col].apply(lambda x: ' '.join([word.capitalize() for word in x.split()]))
 
-        return df
+        return case_convert_df
 
     def remove_whitespace(self, df: pd.DataFrame, columns: Union[list, str], error_skip: bool = False) -> pd.DataFrame:
         """
@@ -367,22 +459,24 @@ class Preprocessor:
         if isinstance (columns, str):
             columns = [columns]
         
+        whitespace_df = df.copy()
+        
         for col in columns:
-            if col not in df.columns:
+            if col not in whitespace_df.columns:
                 if error_skip:
                     print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
                     continue
                 else:
                     raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
             
-            if not pd.api.types.is_string_dtype(df[col]):
-                df[col] = df[col].astype(str)
+            if not pd.api.types.is_string_dtype(whitespace_df[col]):
+                whitespace_df[col] = whitespace_df[col].astype(str)
             
-            df[col] = df[col].apply(
+            whitespace_df[col] = whitespace_df[col].apply(
                 lambda x: ' '.join(x.strip().split()) if isinstance(x, str) else x
             )
         
-        return df
+        return whitespace_df
 
     def standardize_dates(self, df: pd.DataFrame, columns: Union[list, str], output_format: str = "%Y-%m-%d", error_skip: bool = False) -> pd.DataFrame:
         """
@@ -398,9 +492,11 @@ class Preprocessor:
         """
         if isinstance (columns, str):
             columns = [columns]
-            
+        
+        standardize_df = df.copy()
+        
         for col in columns:
-            if col not in df.columns:
+            if col not in standardize_df.columns:
                 if error_skip:
                     print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
                     continue
@@ -415,9 +511,10 @@ class Preprocessor:
                 except (ValueError, TypeError):
                     return val  # return original if not parseable
             
-            df[col] = df[col].apply(parse_date)
+            standardize_df[col] = standardize_df[col].apply(parse_date)
 
-        return df
+        return standardize_df
+    
     def format_numbers(self, df: pd.DataFrame, columns: Union[list, str], decimal_places: int = 2, drop_invalid: bool = False, error_skip : bool = False ) -> pd.DataFrame:
         """
         Format numeric values in specified columns:
@@ -437,8 +534,9 @@ class Preprocessor:
         if isinstance (columns, str):
             columns = [columns]
         
+        number_format_df = df.copy()
         for col in columns:
-            if col not in df.columns:
+            if col not in number_format_df.columns:
                 if error_skip:
                     print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
                     continue
@@ -446,23 +544,23 @@ class Preprocessor:
                     raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
             
             # Remove currency symbols, commas, and whitespace
-            df[col] = (
-                df[col]
+            number_format_df[col] = (
+                number_format_df[col]
                 .astype(str)
                 .str.replace(r'[^0-9\.-]', '', regex=True)
             )
 
             # Convert to numeric, forcing errors to NaN
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+            number_format_df[col] = pd.to_numeric(number_format_df[col], errors='coerce')
 
             # Round to desired decimal places
-            df[col] = df[col].round(decimal_places)
+            number_format_df[col] = number_format_df[col].round(decimal_places)
 
             # Drop or warn about invalid rows
             if drop_invalid:
-                df = df[df[col].notna()]
+                number_format_df = number_format_df[number_format_df[col].notna()]
 
-        return df
+        return number_format_df
 
     def normalize_categories(self, df:pd.DataFrame, columns: Union[list, str], mapping, threshold=80, error_skip=False):
         """
@@ -504,10 +602,12 @@ class Preprocessor:
             else:
                 raise KeyError(f"No match found for '{val}' (best score: {score})")
         
+        category_normalize_df = df.copy()
+        
         for col in columns:
-            df[col] = df[col].apply(normalize_value)
+            category_normalize_df[col] = category_normalize_df[col].apply(normalize_value)
 
-        return df
+        return category_normalize_df
 
     def remove_irrelevant_characters(self, df: pd.DataFrame, columns: Union[list, str], error_skip: bool = True):
         """
@@ -525,15 +625,17 @@ class Preprocessor:
         if isinstance(columns, str):
             columns = [columns]
 
+        irrelevant_df = df.copy()
+        
         for col in columns:
-            if col not in df.columns:
+            if col not in irrelevant_df.columns:
                 if error_skip:
                     print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
                     continue
                 else:
                     raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
 
-            df[col] = df[col].apply(
+            irrelevant_df[col] = irrelevant_df[col].apply(
                 lambda x: (
                     re.sub(r'\s+', ' ', 
                         re.sub(r'[^a-zA-Z0-9\s.,!?\'"-]', '', 
@@ -543,7 +645,7 @@ class Preprocessor:
                 ) if isinstance(x, str) else x
             )
 
-        return df
+        return irrelevant_df
     
     def normalize(self, df: pd.DataFrame,
                   columns: Union[list, str],
@@ -556,9 +658,11 @@ class Preprocessor:
         if isinstance(columns, str):
             columns = [columns]
 
+        normalize_df = df.copy()
+        
         # Check if all specified columns exist in the DataFrame
         for col in columns:
-            if col not in df.columns:
+            if col not in normalize_df.columns:
                 if error_skip:
                     print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
                     continue
@@ -573,7 +677,7 @@ class Preprocessor:
             
             scaler = MinMaxScaler()
             # Perform Min-Max Scaling and reshape to fit the scaler's expected input
-            normalized = scaler.fit_transform(df[[col]])
+            normalized = scaler.fit_transform(normalize_df[[col]])
             
             if save_scaler:
                 save_path_scaler = "scalers"
@@ -591,9 +695,9 @@ class Preprocessor:
                     mapping_manager.save_mapping(col, scaler, format="joblib")
 
             # Update the DataFrame column with the normalized values
-            df[col] = normalized
+            normalize_df[col] = normalized
 
-        return df
+        return normalize_df
     
     def unique_items_list(self, df: pd.DataFrame, columns: Union[list, str], count: bool = False, error_skip: bool = False):
         
@@ -649,9 +753,11 @@ class Preprocessor:
         if isinstance(columns, str):
             columns = [columns]
 
+        OneHot_df = df.copy()
+        
         # Check if all specified columns exist in the DataFrame
         for col in columns:
-            if col not in df.columns:
+            if col not in OneHot_df.columns:
                 if error_skip:
                     print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
                     continue
@@ -667,16 +773,16 @@ class Preprocessor:
         # Loop through each column to apply one-hot encoding
         for col in columns:
             # Transform the data using the encoder and store as a DataFrame
-            ohe_transformed = ohe.fit_transform(df[[col]])
+            ohe_transformed = ohe.fit_transform(OneHot_df[[col]])
 
             # Save the fitted encoder object as mapping if requested
             if mapping_return:
                 mapping_manager.save_mapping(col, ohe)
 
             # Concatenate the one-hot encoded columns with the original DataFrame
-            df = pd.concat([df.drop(col, axis=1), ohe_transformed], axis=1)
+            OneHot_df = pd.concat([OneHot_df.drop(col, axis=1), ohe_transformed], axis=1)
 
-        return df
+        return OneHot_df
 
 
     def TargetEncoder(self, df: pd.DataFrame, columns: Union[list, str], target: str, mapping_return: bool = False, error_skip : bool = False) -> pd.DataFrame:
@@ -684,17 +790,18 @@ class Preprocessor:
         if isinstance(columns, str):
             columns = [columns]
 
+        Target_df = df.copy()
         # Check if all specified columns exist in the DataFrame
         for col in columns:
-            if col not in df.columns:
+            if col not in Target_df.columns:
                 if error_skip:
                     print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
                     continue
                 else:
                     raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
 
-        df[target] = pd.to_numeric(df[target], errors="coerce")
-        df = df.dropna(subset=[target])
+        Target_df[target] = pd.to_numeric(Target_df[target], errors="coerce")
+        Target_df = Target_df.dropna(subset=[target])
         
         # Initialize the TargetEncoder with configurations
         te = TargetEncoder(smoothing=4.0, handle_unknown="value", min_samples_leaf=10.0, handle_missing="value")
@@ -703,16 +810,16 @@ class Preprocessor:
         mapping_manager = MappingManager() if mapping_return else None
         
         # Apply target encoding using the specified columns and target variable
-        te_transformed = te.fit_transform(df[columns], pd.Series(df[target], name=target))
+        te_transformed = te.fit_transform(Target_df[columns], pd.Series(Target_df[target], name=target))
 
         # Save the fitted encoder object as mapping if requested
         if mapping_return:
             mapping_manager.save_mapping(",".join(columns), te)
 
         # Merge the target encoded columns back into the original DataFrame
-        df = pd.concat([df.drop(columns, axis=1), te_transformed], axis=1)
+        Target_df = pd.concat([Target_df.drop(columns, axis=1), te_transformed], axis=1)
 
-        return df
+        return Target_df
 
     
     def FrequencyEncoder(self, df: pd.DataFrame, columns: Union[list, str], mapping_return: bool = False, error_skip: bool = False) -> pd.DataFrame:
@@ -721,9 +828,11 @@ class Preprocessor:
         if isinstance(columns, str):
             columns = [columns]
 
+        freq_df = df.copy()
+        
         # Check if all specified columns exist in the DataFrame
         for col in columns:
-            if col not in df.columns:
+            if col not in freq_df.columns:
                 if error_skip:
                     print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
                     continue
@@ -735,17 +844,17 @@ class Preprocessor:
         
         for col in columns:
             # Calculate frequency of each unique value
-            df[f"{col}_freq"] = df[col].map(df[col].value_counts(normalize=True))
-            freq = df[col].value_counts(normalize=True).to_dict()
+            freq_df[f"{col}_freq"] = freq_df[col].map(freq_df[col].value_counts(normalize=True))
+            freq = freq_df[col].value_counts(normalize=True).to_dict()
 
             # Save the frequency mapping if requested
             if mapping_return:
                 mapping_manager.save_mapping(col, freq)
 
             # Map each value to its calculated frequency
-            df[col] = df[col].map(freq)
+            freq_df[col] = freq_df[col].map(freq)
 
-        return df
+        return freq_df
 
 
     def save_dataframe(self, df, output_path: str, file_format: str):

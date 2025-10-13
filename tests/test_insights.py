@@ -41,6 +41,52 @@ class TestUniqueItemsList:
         })
         result = prep.unique_items_list(df, 'letters')
         assert result['letters'] == ['A', 'C', 'a', 'b', 'c']  # Default sorted by string ASCII
+
+class TestDistributionRates:
+
+    def test_single_column_summary(self, prep, distributionrates_df):
+        result = prep.distribution_rates(distributionrates_df.copy(), ["age"])
+
+        # Check structure
+        assert "Safe (count)" in result.columns
+        assert "Zero (count)" in result.columns
+        assert "Null (count)" in result.columns
+
+        # Check math correctness for 'age'
+        total = len(distributionrates_df)
+        expected_nulls = distributionrates_df["age"].isna().sum()
+        expected_zeros = (distributionrates_df["age"] == 0).sum()
+        expected_safe = total - expected_nulls - expected_zeros
+
+        assert result.loc["age", "Safe (count)"] == expected_safe
+        assert result.loc["age", "Zero (count)"] == expected_zeros
+        assert result.loc["age", "Null (count)"] == expected_nulls
+
+    def test_multiple_columns_summary(self, prep, distributionrates_df):
+        result = prep.distribution_rates(distributionrates_df.copy(), ["age", "income", "score"])
+        assert len(result) == 3  # one row per column
+        assert set(result.index) == {"age", "income", "score"}
+
+    def test_percentage_calculations_are_correct(self, prep, distributionrates_df):
+        result = prep.distribution_rates(distributionrates_df.copy(), ["score"])
+        total = len(distributionrates_df)
+
+        expected_null = distributionrates_df["score"].isna().sum()
+        expected_zero = (distributionrates_df["score"] == 0).sum()
+        expected_safe = total - expected_null - expected_zero
+
+        assert result.loc["score", "Safe (%)"] == round(expected_safe / total * 100, 2)
+        assert result.loc["score", "Zero (%)"] == round(expected_zero / total * 100, 2)
+        assert result.loc["score", "Null (%)"] == round(expected_null / total * 100, 2)
+
+    def test_invalid_column_raises_keyerror(self, prep, distributionrates_df):
+        with pytest.raises(KeyError):
+            prep.distribution_rates(distributionrates_df.copy(), ["nonexistent_column"])
+
+    def test_empty_dataframe_returns_empty_result(self, prep):
+        df = pd.DataFrame()
+        result = prep.distribution_rates(df, [])
+        assert result.empty
         
 class TestMinMaxFinder:
     

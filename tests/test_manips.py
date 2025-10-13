@@ -30,7 +30,27 @@ class TestImputator:
         })
         result = prep.imputator(df, "val", "interpolate")
         assert result["val"].isna().sum() == 0
+    
+    def test_imputator_with_zero_imputation(self, prep, imputation_df):
+        # Create a dummy class or instance if imputator is inside a class
+        class Dummy:
+            pass
+        
+        dummy = Dummy()
+        dummy.imputator = prep.imputator.__get__(dummy)  # bind the function if it’s a method
+        
+        # Run imputation with the zero switch ON
+        result_df = dummy.imputator(
+            df= imputation_df.copy(),
+            columns=["age", "income", "score"],
+            mode=["mean", "median", "mode"],
+            impute_zeros=True
+        )
 
+        # Check that no NaNs or zeros remain
+        assert not (result_df[["age", "income", "score"]] == 0).any().any(), "Zeros were not imputed properly."
+        assert not result_df.isna().any().any(), "NaNs remain after imputation."
+    
     def test_multiple_columns_multiple_modes(self, prep, imputation_df):
         result = prep.imputator(imputation_df.copy(), ["age", "income"], ["mean", "median"])
         assert result["age"].isna().sum() == 0
@@ -47,7 +67,64 @@ class TestImputator:
     def test_mismatched_list_lengths_raises_valueerror(self, prep, imputation_df):
         with pytest.raises(ValueError):
             prep.imputator(imputation_df.copy(), ["age", "income"], ["mean"])
-            
+
+class TestBatchStringRemover:
+
+    def test_single_column_single_removal(self, prep, batchstringremover_df):
+        result = prep.batch_string_remover(
+            batchstringremover_df.copy(),
+            columns=["cylinders"],
+            remove=["cylinders"]
+        )
+        assert not result["cylinders"].str.contains("cylinders").any()
+        assert all(result["cylinders"].str.strip().str.isnumeric())
+
+    def test_multiple_columns_multiple_removals(self, prep, batchstringremover_df):
+        result = prep.batch_string_remover(
+            batchstringremover_df.copy(),
+            columns=["cylinders", "top_speed", "zero_to_sixty"],
+            remove=["cylinders", "mph", "s"]
+        )
+
+        # Check each column’s respective string is removed
+        assert not result["cylinders"].str.contains("cylinders").any()
+        assert not result["top_speed"].str.contains("mph").any()
+        assert not result["zero_to_sixty"].str.contains("s").any()
+
+    def test_columns_and_remove_length_mismatch_raises_valueerror(self, prep, batchstringremover_df):
+        with pytest.raises(ValueError):
+            prep.batch_string_remover(
+                batchstringremover_df.copy(),
+                columns=["cylinders", "top_speed"],
+                remove=["cylinders"]  # Mismatch on purpose
+            )
+
+    def test_nonexistent_column_raises_keyerror(self, prep, batchstringremover_df):
+        with pytest.raises(KeyError):
+            prep.batch_string_remover(
+                batchstringremover_df.copy(),
+                columns=["not_a_column"],
+                remove=["whatever"]
+            )
+
+    def test_dataframe_unchanged_when_no_match_found(self, prep, batchstringremover_df):
+        result = prep.batch_string_remover(
+            batchstringremover_df.copy(),
+            columns=["cylinders"],
+            remove=["engine"]  # word not in any row
+        )
+        assert result.equals(batchstringremover_df)
+
+    def test_removal_is_case_insensitive(self, prep, batchstringremover_df):
+        df = batchstringremover_df.copy()
+        df["cylinders"] = df["cylinders"].str.title()  # e.g. "8 Cylinders"
+        result = prep.batch_string_remover(
+            df,
+            columns=["cylinders"],
+            remove=["cylinders"]
+        )
+        assert not result["cylinders"].str.contains("Cylinders", case=False).any()
+
 class TestNormalization:
 
     def test_normalize_single_column(self, prep, normalization_df):
