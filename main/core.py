@@ -8,10 +8,11 @@ from category_encoders import TargetEncoder
 import os
 import json
 import joblib
-import openpyxl
 from dateutil.parser import parse
 from rapidfuzz import process, fuzz
 import numpy as np
+import psycopg2
+import tempfile
 
 class MappingManager:
     
@@ -68,6 +69,70 @@ class Preprocessor:
     def __init__(self):
         pass
     
+    def load_any_to_postgres(self, file_path: str, table_name: str, db_config: dict):
+            """
+            Format-agnostic loader.
+            Accepts CSV, JSON, JSONL, Excel.
+            Converts to temporary CSV, sends to PostgreSQL.
+            """
+
+            # 1. Detect format
+            ext = os.path.splitext(file_path)[1].lower()
+
+            try:
+                # 2. Read file into a DataFrame
+                if ext == ".csv":
+                    df = pd.read_csv(file_path)
+
+                elif ext == ".json":
+                    df = pd.read_json(file_path)
+
+                elif ext == ".jsonl":
+                    df = pd.read_json(file_path, lines=True)
+
+                elif ext in (".xlsx", ".xls"):
+                    df = pd.read_excel(file_path)
+
+                else:
+                    raise ValueError(f"Unsupported file format: {ext}")
+
+                if df.empty:
+                    raise ValueError("Input dataset is empty.")
+
+                # 3. Convert DataFrame to temporary CSV
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+                    temp_csv_path = tmp.name
+                df.to_csv(temp_csv_path, index=False)
+
+                # 4. Load CSV into PostgreSQL
+                conn = psycopg2.connect(**db_config)
+                cur = conn.cursor()
+
+                cur.execute(f"TRUNCATE TABLE {table_name};")
+
+                with open(temp_csv_path, "r", encoding="utf-8") as f:
+                    cur.copy_expert(
+                        f"COPY {table_name} FROM STDIN WITH CSV HEADER",
+                        f
+                    )
+
+                conn.commit()
+                print(f"✅ Loaded '{file_path}' into '{table_name}'")
+
+            except FileNotFoundError:
+                print(f"❌ File not found: {file_path}")
+
+            except Exception as e:
+                print(f"❌ Error during load: {e}")
+
+            finally:
+                # 5. Cleanup temp CSV and close DB
+                if "conn" in locals():
+                    conn.close()
+                if "temp_csv_path" in locals() and os.path.exists(temp_csv_path):
+                    os.remove(temp_csv_path)
+                
+                
     def rows_sampling(self, df: pd.DataFrame, n: int) -> pd.DataFrame:
         
         if not isinstance(n, int):
@@ -75,6 +140,7 @@ class Preprocessor:
         
         if isinstance(df, str):
             df = pd.read_csv(df, index_col= False)
+        print("✅ Rows Sampled")
         
         return df.sample(n=n, random_state=42, ignore_index= True)
 
@@ -102,6 +168,7 @@ class Preprocessor:
         # Drop only NaN values in the specified columns, but keep the other data
         value_removed_df = value_removed_df.dropna(subset=columns)
 
+        print("✅ Removed The Requested Values")
         return value_removed_df
 
     def imputator(self, 
@@ -147,6 +214,7 @@ class Preprocessor:
             else:
                 raise ValueError(f"Invalid mode '{m}' for column '{col}'. Choose from: mean, median, mode, interpolate.")
         
+        print("✅ Imputation Complete")
         return imputed_df
     
     def distribution_rates(self, 
@@ -181,7 +249,8 @@ class Preprocessor:
                 "Null (count)": null_count,
                 "Null (%)": round(null_count / total * 100, 2),
             }
-
+        
+        print("✅ Distribution Rates Available")
         return pd.DataFrame(result).T
     
     def batch_string_remover(self, df: pd.DataFrame, columns: Union[list,str], remove: Union[list,str], error_skip: bool = False) -> pd.DataFrame:
@@ -217,6 +286,7 @@ class Preprocessor:
         for col, to_remove in zip(columns, remove):
             string_removed_df[col] = string_removed_df[col].str.replace(to_remove, "", regex=True, flags=re.IGNORECASE).str.strip()
 
+        print("✅ Removed The Requested Strings From The Defined Columns")
         return string_removed_df
 
     def columns_rename(self, df: pd.DataFrame, columns: Union[list, str], rename_to: Union[list, str], error_skip: bool = True) -> pd.DataFrame:
@@ -245,6 +315,7 @@ class Preprocessor:
         rename_map = dict(zip(columns, rename_to))
         renamed_df = renamed_df.rename(columns=rename_map)
 
+        print("✅ Columns Renamed")
         return renamed_df
     
     def columns_drop(self, df: pd.DataFrame, columns: Union[list, str], error_skip: bool = False) -> pd.DataFrame:
@@ -264,6 +335,7 @@ class Preprocessor:
         # Drop specified columns
         drop_df = drop_df.drop(columns=columns, axis=1)
         
+        print("✅ Columns Dropped")
         return drop_df
     
     def value_remover(self, df: pd.DataFrame, value: Union[int, list], columns: Union[str, list], mode: Union[str, list], error_skip: bool = False) -> pd.DataFrame:
@@ -293,17 +365,20 @@ class Preprocessor:
             if isinstance(val, tuple) and len(val) == 2:
                 mod == "range"
                 value_removed_df = value_removed_df[(value_removed_df[col] >= val[0]) & (value_removed_df[col] <= val[1])]
+                print(f"✅ Values Outside {val[0]} And {val[1]} Removed")
             elif isinstance(val, int):
                 if mod == "below":
                     value_removed_df = value_removed_df[value_removed_df[col] <= val]
+                    print(f"✅ Values Under {val} Removed")
                 elif mod == "above":
                     value_removed_df = value_removed_df[value_removed_df[col] >= val]
+                    print(f"✅ Values Above {val} Removed")
                 else:
                     raise ValueError("""Please type "above", "below" or "range" for the mode to start removing""")
 
             else:
                 raise ValueError(f"Invalid value type for column '{col}'. Must be an int or tuple.")
-            
+        
         return value_removed_df
     
     def dup_row_remover(self, df: pd.DataFrame, columns:Union[str,list] = None, keep: str = "first", error_skip: bool = False) -> pd.DataFrame:
@@ -334,6 +409,8 @@ class Preprocessor:
         dup_row_df = df.copy()
         
         dup_row_df = dup_row_df.drop_duplicates(subset=columns, keep= keep).reset_index(drop = True)
+        
+        print("✅ Duplicate Rows Removed")
         return dup_row_df
 
     def missing_rows(self, df: pd.DataFrame, drop_threshold: float = None, axis: str = None, inplace: bool = False) -> pd.DataFrame:
@@ -434,13 +511,17 @@ class Preprocessor:
 
             if mode == 'lower':
                 case_convert_df[col] = case_convert_df[col].str.lower()
+                print(f"✅ {col} Succesfully Converted To Lowercase")
             elif mode == 'upper':
                 case_convert_df[col] = case_convert_df[col].str.upper()
+                print(f"✅ {col} Succesfully Converted To Uppercase")
             elif mode == 'title':
                 case_convert_df[col] = case_convert_df[col].str.title()
+                print(f"✅ {col} Succesfully Converted To Title")
             elif mode == 'capitalize':
                 case_convert_df[col] = case_convert_df[col].apply(lambda x: ' '.join([word.capitalize() for word in x.split()]))
-
+                print(f"✅ {col} Succesfully Capitalized")
+                
         return case_convert_df
 
     def remove_whitespace(self, df: pd.DataFrame, columns: Union[list, str], error_skip: bool = False) -> pd.DataFrame:
@@ -476,8 +557,10 @@ class Preprocessor:
                 lambda x: ' '.join(x.strip().split()) if isinstance(x, str) else x
             )
         
+        print("✅ Whitespace Removed")
+                    
         return whitespace_df
-
+    
     def standardize_dates(self, df: pd.DataFrame, columns: Union[list, str], output_format: str = "%Y-%m-%d", error_skip: bool = False) -> pd.DataFrame:
         """
         Standardize date formats in specified columns to a uniform format.
@@ -513,6 +596,7 @@ class Preprocessor:
             
             standardize_df[col] = standardize_df[col].apply(parse_date)
 
+        print("✅ Dates Standardized Succesfully")
         return standardize_df
     
     def format_numbers(self, df: pd.DataFrame, columns: Union[list, str], decimal_places: int = 2, drop_invalid: bool = False, error_skip : bool = False ) -> pd.DataFrame:
@@ -559,7 +643,8 @@ class Preprocessor:
             # Drop or warn about invalid rows
             if drop_invalid:
                 number_format_df = number_format_df[number_format_df[col].notna()]
-
+        
+        print("✅ Numbers Formatted Succesfully")
         return number_format_df
 
     def normalize_categories(self, df:pd.DataFrame, columns: Union[list, str], mapping, threshold=80, error_skip=False):
@@ -607,6 +692,7 @@ class Preprocessor:
         for col in columns:
             category_normalize_df[col] = category_normalize_df[col].apply(normalize_value)
 
+        print("✅ Categories Normalized Succesfully")
         return category_normalize_df
 
     def remove_irrelevant_characters(self, df: pd.DataFrame, columns: Union[list, str], error_skip: bool = True):
@@ -645,6 +731,7 @@ class Preprocessor:
                 ) if isinstance(x, str) else x
             )
 
+        print("✅ Irrelavant Characters Removed")
         return irrelevant_df
     
     def normalize(self, df: pd.DataFrame,
@@ -696,7 +783,8 @@ class Preprocessor:
 
             # Update the DataFrame column with the normalized values
             normalize_df[col] = normalized
-
+        
+        print("✅ Normalization Complete")
         return normalize_df
     
     def unique_items_list(self, df: pd.DataFrame, columns: Union[list, str], count: bool = False, error_skip: bool = False):
@@ -726,6 +814,7 @@ class Preprocessor:
         else:
             pass
         
+        print("✅ Unique Items List Available")
         print(result)
         return result
 
@@ -746,6 +835,7 @@ class Preprocessor:
             print(f"{col}:")
             print(df[col].agg(['min', 'max']))
             print()
+        print("✅ Min/Max Finding Complete")
 
     def OneHotEncoder(self, df: pd.DataFrame, columns: Union[list, str], mapping_return: bool = False, error_skip: bool = False) -> pd.DataFrame:
         
@@ -782,6 +872,7 @@ class Preprocessor:
             # Concatenate the one-hot encoded columns with the original DataFrame
             OneHot_df = pd.concat([OneHot_df.drop(col, axis=1), ohe_transformed], axis=1)
 
+        print("✅ One Hot Encoding Complete")
         return OneHot_df
 
 
@@ -819,6 +910,7 @@ class Preprocessor:
         # Merge the target encoded columns back into the original DataFrame
         Target_df = pd.concat([Target_df.drop(columns, axis=1), te_transformed], axis=1)
 
+        print("✅ Target Encoding Complete")
         return Target_df
 
     
@@ -854,6 +946,7 @@ class Preprocessor:
             # Map each value to its calculated frequency
             freq_df[col] = freq_df[col].map(freq)
 
+        print("✅ Frequency Encoding Complete")
         return freq_df
 
 
@@ -862,19 +955,19 @@ class Preprocessor:
         
         if file_format.lower().strip() == "csv":
             df.to_csv(output_path, index = False)
-            print(f"Data saved to {output_path}")
+            print(f"✅ Data Succesfully Saved To: {output_path}")
             
         elif file_format.lower().strip() == "json":
             df.to_json(output_path, index = False)
-            print(f"Data saved to {output_path}")
+            print(f"✅ Data Succesfully Saved To: {output_path}")
             
         elif file_format.lower().strip() == "jsonl":
             df.to_json(output_path, index = False, lines = True, orient = "records")
-            print(f"Data saved to {output_path}")
+            print(f"✅ Data Succesfully Saved To: {output_path}")
             
         elif file_format.lower().strip() == "excel":
             df.to_excel(output_path, index = False)
-            print(f"Data saved to {output_path}")
+            print(f"✅ Data Succesfully Saved To: {output_path}")
         
         else:
             print("please enter a viable file format (CSV, JSON, JSONL, Excel)")
