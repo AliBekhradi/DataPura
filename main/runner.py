@@ -1,54 +1,55 @@
 # Importing
-from core import Preprocessor
-from core import MappingManager
-import os
+from sqlalchemy import create_engine
+from mapping import MappingManager
 import pandas as pd
-from sql_manager import SQLDataLoader
+from loaders import DataLoader
+from rc_ops import RowsAndColumns
+from encoding import Encoders
+from string_ops import stringsprocessor
+from NAS import NAS
+from insights import Insights
 
 # Intilization
-prep = Preprocessor()
+engine = create_engine("postgresql://admin:10293847@localhost:5432/datapura")
 mm = MappingManager()
-sql= SQLDataLoader()
+load= DataLoader()
+rc = RowsAndColumns()
+info = Insights()
+nas = NAS()
+strp = stringsprocessor()
+enc = Encoders()
 
 # Opening
-df= sql.ingest("C:/Users/ali/Downloads/cars.sql")
-    
+df = load.ingest(file_path= "C:/Users/ali/Projects/DataPura/tesla_deliveries.csv", return_df= False)
+
 
 # Insights
-"""print(df.columns)
-print(df.shape)
-prep.unique_items_list (df, columns= df.columns, count= True)
-prep.min_max_finder (df, columns = ["Year", "Month", "Production_Units", "Avg_Price_USD", "Battery_Capacity_kWh", "Range_km", "CO2_Saved_tons", "Charging_Stations"])
-df = prep.missing_rows (df, drop_threshold= 0.8, axis= "rows", inplace= False)
+info.unique_items_list (df, columns= df.columns, count= True)
+info.min_max_finder (df, columns = ["Year", "Month", "Production_Units", "Avg_Price_USD", "Battery_Capacity_kWh", "Range_km", "CO2_Saved_tons", "Charging_Stations"])
+df = info.missing_rows (df, drop_threshold= 0.8, axis= "rows", inplace= False)
+info.distribution_rates(df, columns= {})
 
-# Basics
-df = prep.value_remover(df, value= [], columns= [], mode= [], error_skip= [])
-df = prep.batch_string_remover(df, columns= "price", remove="$")
-df = prep.convert_case(df , columns= [], mode= [], error_skip= [])
-df = prep.remove_whitespace(df , columns= df.columns, error_skip= [])
-df = prep.standardize_dates(df , columns= [], output_format= [], error_skip= [])
-df = prep.format_numbers(df, columns= [], decimal_places= [], drop_invalid= [], error_skip= [])
-df = prep.columns_rename (df, columns=[], rename_to= [], strict= {})
-df = prep.columns_drop (df, columns=[])
-df = prep.rows_sampling (df, n= {})
-df = prep.normalize_categories(df, columns= [], mapping= [], threshold=80, error_skip= [])
-df = prep.remove_irrelevant_characters(df, columns= [], error_skip= [])
-df = prep.save_dataframe (df, output_path={}, file_format= {})
-df = prep.dup_row_remover (df, columns=[], keep= {})
+# String Ops
+df = strp.convert_case(df, columns= {}, mode= {})
+df = strp.batch_string_remover(df, columns={}, remove={})
+df = strp.remove_irrelevant_characters(df, columns={})
+df = strp.remove_whitespace(df, columns={})
 
-# Imputation
-df = prep.imputator (df, columns=[], mode= {})
-prep.save_dataframe (df, output_path={}, file_format= {})
+# R&C
+df = rc.columns_drop(df, columns={})
+df = rc.rename_columns(engine=engine, table= {}, columns={}, rename_to={})
+df = rc.value_remover(df, value={}, columns={}, mode={})
+df = rc.dup_row_remover(df, columns={}, keep={})
+df = rc.imputator(df, columns={}, mode={}, impute_zeros={})
 
-# Normalization (Scaling)
-df = prep.normalize(df, mapping_return={}, mapping_format= {}, save_scaler= {})
-prep.save_dataframe (df, output_path={}, file_format= {})
+# Normalization And Standardization (NAS)
+df = nas.normalize(df, columns={}, mapping_return={}, mapping_format={}, save_scaler= True)
+df = nas.normalize_categories(df, columns={}, mapping={}, threshold={})
+df = nas.format_numbers(df, columns={}, decimal_places=2, drop_invalid=False)
+df = nas.standardize_dates(df, columns={})
 
 # Encoding
-df = prep.FrequencyEncoder(df, columns=[], mapping_return= {})
-df = prep.OneHotEncoder(df, columns=[], mapping_return= {})
-df = prep.TargetEncoder(df, columns=[], target={}, mapping_return={})
-prep.save_dataframe(df, output_path={}, file_format= {})
 
-# Final Save
-prep.save_dataframe(df, output_path={}, file_format= {})"""
+df = enc.OneHotEncoder(df, columns={}, mapping_return=True)
+df = enc.FrequencyEncoder(df, columns={}, mapping_return=True)
+df = enc.TargetEncoder(df, columns={}, target={}, mapping_return=True)
