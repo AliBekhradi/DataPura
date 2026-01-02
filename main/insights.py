@@ -1,167 +1,270 @@
 import pandas as pd
-from typing import Union
+from typing import Union, List, Dict
+from sqlalchemy import text
 
 class Insights:
     
     def __init__(self):
         pass
     
-    def distribution_rates(self, 
-            df: pd.DataFrame, 
-            columns: Union[list, str],
-            error_skip: bool = False) -> pd.DataFrame:
-        
+    def distribution_rates(
+        self,
+        engine,
+        table: str,
+        columns: Union[str, List[str]],
+        display: bool = True,
+        schema: str = "public"
+    ) -> Dict:
+
         if isinstance(columns, str):
             columns = [columns]
-        
-        for col in columns:
-            if col not in df.columns:
-                if error_skip:
-                    print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
-                    continue
-                else:
-                    raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
-    
-        result = {}
 
-        for col in columns:
-            total = len(df)
-            null_count = df[col].isna().sum()
-            zero_count = (df[col] == 0).sum()
-            safe_count = total - null_count - zero_count
+        results = {}
 
-            result[col] = {
-                "Safe (count)": safe_count,
-                "Safe (%)": round(safe_count / total * 100, 2),
-                "Zero (count)": zero_count,
-                "Zero (%)": round(zero_count / total * 100, 2),
-                "Null (count)": null_count,
-                "Null (%)": round(null_count / total * 100, 2),
-            }
-        
+        with engine.begin() as conn:
+            for col in columns:
+                query = text(f"""
+                    SELECT
+                        COUNT(*) AS total_rows,
+                        COUNT(*) FILTER (WHERE {col} IS NULL) AS null_count,
+                        COUNT(*) FILTER (WHERE {col} = 0) AS zero_count
+                    FROM {schema}.{table};
+                """)
+
+                row = conn.execute(query).mappings().one()
+
+                total = row["total_rows"]
+                nulls = row["null_count"]
+                zeros = row["zero_count"]
+                safe = total - nulls - zeros
+
+                results[col] = {
+                    "safe_count": safe,
+                    "safe_prc": f"% {round((safe / total) * 100, 2) if total else 0}",
+                    "zero_count": zeros,
+                    "zero_prc": f"% {round((zeros / total) * 100, 2) if total else 0}",
+                    "null_count": nulls,
+                    "null_prc": f"% {round((nulls / total) * 100, 2) if total else 0}"
+                }
+
         print("✅ Distribution Rates Available")
-        return pd.DataFrame(result).T
+        if display:
+            print("=" * 50)
+            print("📊 Distribution Rates")
+            print("=" * 50)
+            for col, stats in results.items():
+                print(f"\nColumn: {col}")
+                for k, v in stats.items():
+                    print(f"  {k.replace('_', ' ').title()}: {v}")
+
+        return {
+            "operation": "distribution_rates",
+            "table": f"{schema}.{table}",
+            "results": results,
+            "status": "success"
+        }
     
-    def missing_rows(self, df: pd.DataFrame,
-                     drop_threshold: float = None,
-                     axis: str = None,
-                     inplace: bool = False) -> pd.DataFrame:
-        """
-        drop_threshold : float, optional
-            The maximum allowed percentage of missing values before dropping.
-            Must be between 0 and 1. For example, 0.3 means drop rows/columns with more than 30% missing values.
-        axis : {'rows', 'columns'}, optional
-            Whether to drop rows or columns exceeding the threshold. Must be 'rows' or 'columns'.
-        inplace : bool, optional
-            Whether to apply the changes to the original DataFrame or return a new one.
-
-        Returns:
-        -------
-        pd.DataFrame
-            The DataFrame after applying the optional drop operation.
-        """
-
-        print("="*40)
-        print("📊 Missing Data Insight")
-        print("="*40)
-
-        total_missing = df.isnull().sum()
-        percent_missing = (total_missing / len(df)) * 100
-        missing_report = pd.DataFrame({
-            'Total Missing': total_missing,
-            'Percent Missing': percent_missing.round(2)
-        })
-        
-        print(missing_report[missing_report['Total Missing'] > 0])
-
-        if drop_threshold is not None and axis is not None:
-            
-            if not 0 <= drop_threshold <= 1:
-                raise ValueError("drop_threshold must be between 0 and 1.")
-            
-            if axis not in ['rows', 'columns']:
-                raise ValueError("axis must be either 'rows' or 'columns'.")
-
-            print(f"\n⚠️ Applying drop operation for {axis} with more than {drop_threshold*100:.2f}% missing values...")
-
-            if axis == 'rows':
-                condition = df.isnull().mean(axis=1) > drop_threshold
-                num_to_drop = condition.sum()
-                print(f"Dropping {num_to_drop} rows.")
-                
-                if inplace:
-                    df.drop(df[condition].index, inplace=True)
-                else:
-                    df = df.loc[~condition]
-
-            elif axis == 'columns':
-                condition = df.isnull().mean(axis=0) > drop_threshold
-                num_to_drop = condition.sum()
-                print(f"Dropping {num_to_drop} columns.")
-                
-                if inplace:
-                    df.drop(columns=df.columns[condition], inplace=True)
-                else:
-                    df = df.loc[:, ~condition]
-
-            return df
-        return 
-    
-    
-    def unique_items_list(self, 
-                          df: pd.DataFrame, 
-                          columns: Union[list, str], 
-                          count: bool = False, 
-                          error_skip: bool = False):
-        
-        result = {}  # Dictionary to store unique items for each column
-
-        if isinstance(columns, str):
-            columns = [columns]
-        
-        # Check if columns exist in the DataFrame
-        for col in columns:
-            if col not in df.columns:
-                if error_skip:
-                    print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
-                    continue
-                else:
-                    raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
-        
-        for col in columns:
-            if col in df.columns:  # Ensure the column exists in the DataFrame
-                unique_items = df[col].dropna().astype(str).str.strip().unique()
-                result[col] = sorted(unique_items)  # Sort the unique items alphabetically
-        
-        if count == True:
-            for col in result:
-                print(f"{col}: {len(result[col])}")
-        else:
-            pass
-        
-        print("✅ Unique Items List Available")
-        print(result)
-        return result
-
-    
-    def min_max_finder(self,
-                       df: pd.DataFrame,
-                       columns: Union[list, str], 
-                       error_skip: bool = False) -> list:
+    def min_max_finder(
+        self,
+        engine,
+        table,
+        columns: Union[List[str], str],
+        display: bool = True,
+        schema = "public",
+        ) -> Dict:
           
         if isinstance(columns, str):
             columns = [columns]
+            
+        results = {}
         
-        for col in columns:
-            if col not in df.columns:
-                if error_skip:
-                    print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
-                    continue
-                else:
-                    raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
+        with engine.begin() as conn:
+            for col in columns:
+                query = text(f"""
+                SELECT
+                    MIN({col}) AS min_value,
+                    MAX({col}) AS max_value
+                FROM {schema}.{table};
+            """)
+                
+            row = conn.execute(query).mappings().one()
+
+            results[col] = {
+                "min": row["min_value"],
+                "max": row["max_value"]
+            }
         
-        for col in columns:
-            print(f"{col}:")
-            print(df[col].agg(['min', 'max']))
-            print()
         print("✅ Min/Max Finding Complete")
+        
+        if display:
+            print("=" * 40)
+            print("📈 Min / Max Finder")
+            print("=" * 40)
+            for col, stats in results.items():
+                print(f"{col}:")
+                print(f"  Min: {stats['min']}")
+                print(f"  Max: {stats['max']}")
+                print()
+
+        return {
+        "operation": "min_max_finder",
+        "table": f"{schema}.{table}",
+        "results": results,
+        "status": "success"
+    }
+    
+    def missing_rows(
+        self,
+        engine,
+        table: str,
+        column: Union[str, List[str]],
+        schema: str = "public",
+        drop_threshold: float = None,
+        axis: str = None,
+        display: bool = True
+    ) -> Dict:
+
+        with engine.begin() as conn:
+
+            # Column-level missing stats
+            query = text(f"""
+                SELECT
+                    column_name,
+                    COUNT(*) FILTER (WHERE {table}.{column} IS NULL)::float
+                    / COUNT(*) AS missing_ratio
+                FROM information_schema.columns
+                JOIN {schema}.{table} ON true
+                WHERE table_schema = :schema
+                AND table_name = :table
+                GROUP BY column_name;
+            """)
+
+            rows = conn.execute(
+                query, {"schema": schema, "table": table}
+            ).mappings().all()
+
+        missing_report = {
+            row["column_name"]: round(row["missing_ratio"] * 100, 2)
+            for row in rows
+        }
+
+
+        if display:
+            print("=" * 50)
+            print("📊 Missing Data Report")
+            print("=" * 50)
+
+            any_missing = False
+
+            for col, pct in missing_report.items():
+                if pct > 0:
+                    any_missing = True
+                    print(f"{col}: {pct}% missing")
+
+            if not any_missing:
+                print("✅ No missing values detected in any of the specified columns.")
+
+        return {
+            "operation": "missing_rows",
+            "table": f"{schema}.{table}",
+            "missing_report": missing_report,
+            "drop_threshold": drop_threshold,
+            "axis": axis,
+            "status": "success"
+        }
+
+    
+    def unique_items_list(
+        self,
+        engine,
+        table: str,
+        columns: Union[str, List[str]],
+        schema: str = "public",
+        display: bool = True
+    ) -> Dict:
+
+        if isinstance(columns, str):
+            columns = [columns]
+
+        HIGH_CARDINALITY_THRESHOLD = 0.3
+        results = {}
+
+        with engine.begin() as conn:
+
+            # Total row count (once)
+            total_rows = conn.execute(
+                text(f"SELECT COUNT(*) FROM {schema}.{table};")
+            ).scalar()
+
+            for col in columns:
+
+                # Unique value count
+                unique_count = conn.execute(
+                    text(f"""
+                        SELECT COUNT(DISTINCT {col})
+                        FROM {schema}.{table};
+                    """)
+                ).scalar()
+
+                # Distribution per value
+                rows = conn.execute(
+                    text(f"""
+                        SELECT
+                            {col} AS value,
+                            COUNT(*) AS count,
+                            ROUND(
+                                (
+                                    COUNT(*)::numeric
+                                    / SUM(COUNT(*)) OVER ()
+                                    * 100
+                                ),
+                                2
+                            ) AS percentage
+                        FROM {schema}.{table}
+                        GROUP BY {col}
+                        ORDER BY count DESC;
+                    """)
+                ).mappings().all()
+
+                cardinality_ratio = (
+                    unique_count / total_rows if total_rows else 0
+                )
+
+                results[col] = {
+                    "unique_count": unique_count,
+                    "total_rows": total_rows,
+                    "cardinality_ratio": cardinality_ratio,
+                    "distribution": rows
+                }
+
+        # Human-facing output
+        if display:
+            print("=" * 50)
+            print("📊 Value Distribution")
+            print("=" * 50)
+
+            for col, data in results.items():
+                print(f"\nColumn: {col}")
+                print(f"Unique values: {data['unique_count']}")
+
+                if data["cardinality_ratio"] > HIGH_CARDINALITY_THRESHOLD:
+                    print(
+                        f"⚠️  Column '{col}' has very high cardinality "
+                        f"({data['unique_count']} unique / "
+                        f"{data['total_rows']} rows). "
+                        f"Distribution skipped."
+                    )
+                else:
+                    for row in data["distribution"]:
+                        print(
+                            f"  {row['value']}: "
+                            f"{row['count']} "
+                            f"({row['percentage']}%)"
+                        )
+
+        return {
+            "operation": "unique_items_list",
+            "table": f"{schema}.{table}",
+            "results": results,
+            "status": "success"
+        }

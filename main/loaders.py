@@ -92,6 +92,38 @@ class DataLoader:
         
         return result_df
     
+    def read_from_sql(self, table_name: str) -> list[str]:
+        """
+        Reads the current schema of a table from the database.
+        Used for validating SQL operations (drop/rename/etc).
+        """
+
+        query = """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = :table_name
+            ORDER BY ordinal_position
+        """
+
+        try:
+            with DataLoader.engine.begin() as conn:
+                result = conn.execute(
+                    text(query),
+                    {"table_name": table_name}
+                )
+                columns = [row[0] for row in result]
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed reading schema for table '{table_name}'."
+            ) from e
+
+        if not columns:
+            raise RuntimeError(
+                f"Table '{table_name}' exists but has no columns."
+            )
+
+        return columns
+
     def _print_df_info(self, df: pd.DataFrame):
         print("=" * 50)
         print("📊 Dataset Overview")

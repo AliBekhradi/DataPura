@@ -111,25 +111,56 @@ class RowsAndColumns:
             "status": "success"
         }
     
-    def columns_drop(self, df: pd.DataFrame, columns: Union[list, str], error_skip: bool = False) -> pd.DataFrame:
-        
+    def drop_columns(
+        self,
+        engine,
+        table: str,
+        columns: Union[str, List[str]],
+        error_skip: bool = False,
+        schema: str = "public"
+    ) -> Dict:
+
+        # Normalize input
         if isinstance(columns, str):
             columns = [columns]
-        
-        for col in columns:
-            if col not in df.columns:
-                if error_skip:
-                    print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
+
+        with engine.begin() as conn:
+            # Inspect existing columns
+            result = conn.execute(text("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = :schema
+                  AND table_name = :table
+            """), {"schema": schema, "table": table})
+
+            existing_cols = {row[0] for row in result}
+
+            missing = [c for c in columns if c not in existing_cols]
+            if missing and not error_skip:
+                raise KeyError(f"Missing columns: {missing}")
+
+            dropped = []
+
+            for col in columns:
+                if col not in existing_cols:
                     continue
-                else:
-                    raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
-        
-        drop_df = df.copy()
-        # Drop specified columns
-        drop_df = drop_df.drop(columns=columns, axis=1)
+
+                conn.execute(text(f"""
+                    ALTER TABLE {schema}.{table}
+                    DROP COLUMN {col};
+                """))
+
+                dropped.append(col)
         
         print("✅ Columns Dropped")
-        return drop_df
+
+        return {
+            "operation": "drop_columns",
+            "table": f"{schema}.{table}",
+            "dropped_columns": dropped,
+            "skipped_columns": missing,
+            "status": "success"
+        }
     
     def value_remover(self, df: pd.DataFrame, value: Union[int, list], columns: Union[str, list], mode: Union[str, list], error_skip: bool = False) -> pd.DataFrame:
         
