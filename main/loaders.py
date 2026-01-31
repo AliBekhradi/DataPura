@@ -11,7 +11,7 @@ class DataLoader:
     def __init__(self):
         pass
     
-    def ingest(self, file_path: str, return_df: bool = True, preview: bool = False):
+    def ingest(self, file_path: str, return_df: bool = False, preview: bool = False):
         table_name = os.path.splitext(os.path.basename(file_path))[0].lower()
         ext = os.path.splitext(file_path)[1].lower()
 
@@ -36,14 +36,55 @@ class DataLoader:
                 .str.lower()
                 .str.replace(r"[^a-z0-9_]+", "_", regex=True)
             )
+            
+            has_id = "id" in df.columns
 
-            df.to_sql(table_name, DataLoader.engine, if_exists="replace", index=False)
-
+            if has_id:
+                print(f"ID column found. Proceeding with table creation...")
+                df.to_sql(table_name, DataLoader.engine, if_exists="replace", index=False)
+            
             if return_df:
                 result_df = pd.read_sql(
                     f"SELECT * FROM {table_name}", DataLoader.engine
                 )
-        
+            
+            else:
+                DTYPE_MAP = {
+                    "int": "BIGINT",
+                    "float": "DOUBLE PRECISION",
+                    "datetime": "TIMESTAMP",
+                    "bool": "BOOLEAN",
+                }
+
+                column_defs = []
+
+                for col, dtype in zip(df.columns, df.dtypes):
+                    sql_type = "TEXT"
+                    dtype_str = str(dtype)
+
+                    for key, mapped_type in DTYPE_MAP.items():
+                        if key in dtype_str:
+                            sql_type = mapped_type
+                            break
+
+                    column_defs.append(f"{col} {sql_type}")
+
+                columns_sql = ",\n    ".join(column_defs)
+
+                create_table_sql = f"""
+                DROP TABLE IF EXISTS {table_name};
+
+                CREATE TABLE {table_name} (
+                    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                    {columns_sql}
+                );
+                """
+                
+                with DataLoader.engine.begin() as conn:
+                    conn.execute(text(create_table_sql))
+                
+                df.to_sql(table_name, DataLoader.engine, if_exists="append", index= False)
+    
         elif ext == ".sql":
             with open(file_path, "r", encoding="utf-8") as f:
                 sql_text = f.read()
@@ -165,16 +206,17 @@ class DataLoader:
 
         return output_path
 
-    def refresh_table(self, file_path: str,
-                             table_name: str,
-                             db_config: dict):
+    def refresh_table(self, 
+            file_path: str,
+            table_name: str,
+            db_config: dict):
+            
             """
             Format-agnostic loader.
             Accepts CSV, JSON, JSONL, Excel.
             Converts to temporary CSV, sends to PostgreSQL.
             """
 
-            # 1. Detect format
             ext = os.path.splitext(file_path)[1].lower()
 
             try:

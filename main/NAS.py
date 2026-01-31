@@ -1,7 +1,8 @@
 import pandas as pd
-from typing import Union
+from typing import Union, Dict
 import os
 import joblib
+from sqlalchemy import text
 from sklearn.preprocessing import MinMaxScaler
 from dateutil.parser import parse
 from rapidfuzz import process, fuzz
@@ -66,43 +67,96 @@ class NAS:
         print("✅ Normalization Complete")
         return normalize_df
     
-    def standardize_dates(self, df: pd.DataFrame, columns: Union[list, str], output_format: str = "%Y-%m-%d", error_skip: bool = False) -> pd.DataFrame:
+    def standardize_dates(
+        self,
+        engine,
+        table: str,
+        df: pd.DataFrame,
+        columns: Union[list, str],
+        schema: str = "public",
+        error_skip: bool = False
+    ) -> Dict:
         """
-        Standardize date formats in specified columns to a uniform format.
-
-        Parameters:
-            df (pd.DataFrame): The DataFrame to process.
-            columns (list): List of column names to convert.
-            output_format (str): The desired date format (default is 'YYYY-MM-DD').
-
-        Returns:
-            pd.DataFrame: DataFrame with standardized date formats.
+        Standardize date columns using Python parsing, then enforce
+        correctness and performance guarantees in SQL.
         """
-        if isinstance (columns, str):
+
+        if isinstance(columns, str):
             columns = [columns]
-        
-        standardize_df = df.copy()
+
+        df_out = df.copy()
+        operations = []
         
         for col in columns:
-            if col not in standardize_df.columns:
+            if col not in df_out.columns:
                 if error_skip:
-                    print(f"⚠️ Column '{col}' does not exist in the DataFrame. Continuing Operation...")
+                    print(f"⚠️ Column '{col}' not found. Skipping.")
                     continue
                 else:
-                    raise KeyError(f"⚠️ Column '{col}' does not exist in the DataFrame.")
-            
+                    raise KeyError(f"Column '{col}' does not exist.")
+
             def parse_date(val):
                 if pd.isna(val):
-                    return pd.NaT
+                    return None
                 try:
-                    return parse(str(val), dayfirst=False).strftime(output_format)
+                    return parse(str(val), dayfirst=False).date()
                 except (ValueError, TypeError):
-                    return val  # return original if not parseable
-            
-            standardize_df[col] = standardize_df[col].apply(parse_date)
+                    return val  # preserve original if unparseable
 
+            before_nulls = df_out[col].isna().sum()
+            df_out[col] = df_out[col].apply(parse_date)
+            after_nulls = df_out[col].isna().sum()
+
+            operations.append({
+                "column": col,
+                "parsed_nulls_added": after_nulls - before_nulls
+            })
+
+        df_out.to_sql(
+            table,
+            engine,
+            schema=schema,
+            if_exists="replace",
+            index=False
+        )
+
+        with engine.begin() as conn:
+            for col in columns:
+                # Enforce DATE type
+                conn.execute(text(f"""
+                    ALTER TABLE {schema}.{table}
+                    ALTER COLUMN {col} TYPE DATE
+                    USING {col}::DATE;
+                """))
+
+                # Enforce sane bounds
+                conn.execute(text(f"""
+                    ALTER TABLE {schema}.{table}
+                    ADD CONSTRAINT {table}_{col}_valid_date
+                    CHECK (
+                        {col} BETWEEN DATE '1900-01-01' AND CURRENT_DATE
+                    );
+                """))
+
+                # Index for performance
+                conn.execute(text(f"""
+                    CREATE INDEX IF NOT EXISTS
+                    idx_{table}_{col}
+                    ON {schema}.{table} ({col});
+                """))
+        
         print("✅ Dates Standardized Succesfully")
-        return standardize_df
+        
+        return {
+            "operation": "standardize_dates",
+            "table": f"{schema}.{table}",
+            "columns": columns,
+            "python_parsing": True,
+            "sql_constraints_applied": True,
+            "indexes_created": True,
+            "operations": operations,
+            "status": "success"
+        }
     
     def format_numbers(self, df: pd.DataFrame, columns: Union[list, str], decimal_places: int = 2, drop_invalid: bool = False, error_skip : bool = False ) -> pd.DataFrame:
         """
