@@ -2,8 +2,9 @@ import os
 import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy import text
-import psycopg2
-import tempfile
+from pathlib import Path
+import re
+from datetime import datetime
 
 class DataLoader:
     engine = create_engine("postgresql://admin:10293847@localhost:5432/datapura")
@@ -205,74 +206,84 @@ class DataLoader:
         print(f"✅ Table '{table_name}' exported to {output_path}")
 
         return output_path
+    
+    def strip_run_id(self, name: str) -> str:
+        return re.sub(r"_\d{8}_\d{6}$", "", name)
 
-    def refresh_table(self, 
-            file_path: str,
+    def apply_table_update(self,
             table_name: str,
-            db_config: dict):
+            df_name: str = None,
+            file_path: str = None,
+            schema: str = "public",
+            replace: bool = False):
             
-            """
-            Format-agnostic loader.
-            Accepts CSV, JSON, JSONL, Excel.
-            Converts to temporary CSV, sends to PostgreSQL.
-            """
+            BASE_DIR = Path(__file__).resolve().parent
+            source_file = Path(file_path) if file_path else (BASE_DIR / df_name if df_name else None)
+            
+            df = pd.read_csv(source_file, header=0)
+            df.columns = [col.lower() for col in df.columns]
+            df_cols = df.columns
+            columns_sql = ", ".join(df_cols)
 
-            ext = os.path.splitext(file_path)[1].lower()
+            if not source_file or not source_file.exists():
+                raise FileNotFoundError(f"Missing or invalid file: {source_file}")
+            
+            if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", table_name) or not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", schema):
+                raise ValueError(f"Unsafe SQL identifier: Check the table name or schema name")
+            
+            # 2. DATE ID GENERATION Using Year-Month-Day-Hour-Minute-Second for safety
+            run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-            try:
-                # 2. Read file into a DataFrame
-                if ext == ".csv":
-                    df = pd.read_csv(file_path)
+            with DataLoader.engine.begin() as conn:
+                cur = conn.connection.cursor()
 
-                elif ext == ".json":
-                    df = pd.read_json(file_path)
+                if replace:
+                    # Construct paths once to avoid typos
+                    live_path = f"{schema}.{table_name}"
+                    tmp_name = f"_tmp_{table_name}"
+                    tmp_path = f"{schema}.{tmp_name}"
+                    old_name = f"_old_{table_name}"
+                    old_path = f"{schema}.{old_name}"
 
-                elif ext == ".jsonl":
-                    df = pd.read_json(file_path, lines=True)
+                    conn.execute(text(f"DROP TABLE IF EXISTS {tmp_path};"))
+                    conn.execute(text(f"CREATE TABLE {tmp_path} (LIKE {live_path} INCLUDING ALL);"))
+                    missing = set(df_cols) - set(pd.read_sql(f"SELECT * FROM {schema}.{table_name} LIMIT 0", conn).columns)
+                    if missing:
+                        raise ValueError(f"CSV has columns not in table: {missing}")
 
-                elif ext in (".xlsx", ".xls"):
-                    df = pd.read_excel(file_path)
+                    with open(source_file, "r", encoding="utf-8") as f:
+                        cur.copy_expert(
+                        f"COPY {tmp_path} ({columns_sql}) FROM STDIN WITH CSV HEADER;",f)
+
+                    conn.execute(text(f"DROP TABLE IF EXISTS {old_path};"))
+                    # RENAME TO takes a NAME, not a PATH (No schema allowed after 'TO')
+                    conn.execute(text(f"ALTER TABLE {live_path} RENAME TO {old_name};"))
+                    conn.execute(text(f"ALTER TABLE {tmp_path} RENAME TO {table_name};"))
+                    conn.execute(text(f"DROP TABLE {old_path};"))
+                    
+                    print(f"Table '{table_name}' successfully updated in schema '{schema}'.")
 
                 else:
-                    raise ValueError(f"Unsupported file format: {ext}")
+                    # --- UNIQUE DATE LOGIC ---
+                    base_table = self.strip_run_id(table_name)
+                    target_table_name = f"{base_table}_{run_id}"
+                    # FIXED: Ensure the new dated table is created in the same schema
+                    target_table_path = f"{schema}.{target_table_name}"
+                    
+                    conn.execute(text(f"CREATE TABLE {target_table_path} (LIKE {schema}.{table_name} INCLUDING ALL);"))
+                    
+                    missing = set(df_cols) - set(pd.read_sql(f"SELECT * FROM {schema}.{table_name} LIMIT 0", conn).columns)
+                    if missing:
+                        raise ValueError(f"CSV has columns not in table: {missing}")
 
-                if df.empty:
-                    raise ValueError("Input dataset is empty.")
-
-                # 3. Convert DataFrame to temporary CSV
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-                    temp_csv_path = tmp.name
-                df.to_csv(temp_csv_path, index=False)
-
-                # 4. Load CSV into PostgreSQL
-                conn = psycopg2.connect(**db_config)
-                cur = conn.cursor()
-
-                cur.execute(f"TRUNCATE TABLE {table_name};")
-
-                with open(temp_csv_path, "r", encoding="utf-8") as f:
-                    cur.copy_expert(
-                        f"COPY {table_name} FROM STDIN WITH CSV HEADER",
-                        f
-                    )
-
-                conn.commit()
-                print(f"✅ Loaded '{file_path}' into '{table_name}'")
-
-            except FileNotFoundError:
-                print(f"❌ File not found: {file_path}")
-
-            except Exception as e:
-                print(f"❌ Error during load: {e}")
-
-            finally:
-                # 5. Cleanup temp CSV and close DB
-                if "conn" in locals():
-                    conn.close()
-                if "temp_csv_path" in locals() and os.path.exists(temp_csv_path):
-                    os.remove(temp_csv_path)    
+                    with open(source_file, "r", encoding="utf-8") as f:
+                        cur.copy_expert(
+                        f"COPY {target_table_path} ({columns_sql}) FROM STDIN WITH CSV HEADER;",f)
+                        
+                    print(f"New snapshot created: {target_table_path}")
         
-    def save_dataframe(df,
+    def save_dataframe(self,
+                    df,
                     output_path: str,
                     file_format: str):
         """Write the cleaned dataset to a new file for future use."""
